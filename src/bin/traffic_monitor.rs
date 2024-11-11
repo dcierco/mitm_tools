@@ -8,12 +8,11 @@ use chrono::serde::ts_seconds;
 use chrono::{DateTime, Local, Utc};
 use clap::Parser;
 use core::str;
-use dns_parser::Packet as DnsPacket;
 use handlebars::Handlebars;
-use httparse::{Request, EMPTY_HEADER};
 use log::{debug, error, info};
 use pcap::{Capture, Device};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -239,7 +238,7 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
         .map_err(|e| format!("Failed to open capture: {}", e))?;
 
     // Set capture filter for HTTP and DNS traffic
-    let filter = format!("host {} and (port 80 or port 53)", target);
+    let filter = format!("host {} and (port 80 or port 53 or port 443)", target);
     cap.filter(&filter, true)
         .map_err(|e| format!("Failed to set filter: {}", e))?;
 
@@ -250,25 +249,18 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
         let mut stats = stats.lock().unwrap();
         stats.packet_count += 1;
 
-        // Analyze packet based on port number
+        // Analyze packet based on content
         if packet.header.len > 0 {
-            match packet.header.caplen as u16 {
-                53 => {
-                    // DNS packet analysis
-                    if let Some(domain) = analyze_dns_packet(&packet.data) {
-                        stats.add_dns_query(domain);
-                    }
+            if is_dns_packet(&packet.data) {
+                if let Some(domain) = analyze_dns_packet(&packet.data) {
+                    debug!("DNS query captured: {}", domain);
+                    stats.add_dns_query(domain);
                 }
-                80 => {
-                    // HTTP packet analysis
-                    if let Some((method, url, title)) = analyze_http_packet(&packet.data) {
-                        stats.add_http_request(url, method, title);
-                    }
+            } else if is_http_packet(&packet.data) {
+                if let Some((method, url, title)) = analyze_http_packet(&packet.data) {
+                    debug!("HTTP request captured: {} {}", method, url);
+                    stats.add_http_request(url, method, title);
                 }
-                _ => debug!(
-                    "Captured packet on unexpected port: {}",
-                    packet.header.caplen
-                ),
             }
         }
 
@@ -281,80 +273,99 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
     Ok(())
 }
 
+fn is_dns_packet(packet_data: &[u8]) -> bool {
+    // DNS packets typically start after IP (20 bytes) and UDP (8 bytes) headers
+    if packet_data.len() <= 28 {
+        return false;
+    }
+
+    // Check for standard DNS port (53)
+    let dest_port = ((packet_data[22] as u16) << 8) | packet_data[23] as u16;
+    let src_port = ((packet_data[20] as u16) << 8) | packet_data[21] as u16;
+
+    dest_port == 53 || src_port == 53
+}
+
+fn is_http_packet(packet_data: &[u8]) -> bool {
+    if packet_data.len() <= 40 {
+        return false;
+    }
+
+    let data = &packet_data[40..];
+    if let Ok(str_data) = std::str::from_utf8(data) {
+        let first_line = str_data.lines().next().unwrap_or("");
+        return first_line.contains("HTTP/")
+            || first_line.starts_with("GET ")
+            || first_line.starts_with("POST ")
+            || first_line.starts_with("HEAD ")
+            || first_line.starts_with("PUT ")
+            || first_line.starts_with("DELETE ");
+    }
+    false
+}
+
 /// Analyzes a DNS packet and extracts the queried domain
 ///
 /// # Arguments
 ///
 /// * `packet_data` - Raw packet data including IP and UDP headers
-///
-/// # Returns
-///
-/// Option containing the queried domain name if successfully parsed
 fn analyze_dns_packet(packet_data: &[u8]) -> Option<String> {
-    // Option 1: Using dns-parser crate
-    fn analyze_with_dns_parser(data: &[u8]) -> Option<String> {
-        // Skip IP header (20 bytes) and UDP header (8 bytes)
-        let dns_data = &data[28..];
-
-        match DnsPacket::parse(dns_data) {
-            Ok(packet) => {
-                // Look for the first question in the DNS query
-                packet
-                    .questions
-                    .first()
-                    .map(|question| question.qname.to_string())
-            }
-            Err(e) => {
-                debug!("Failed to parse DNS packet: {}", e);
-                None
-            }
-        }
+    // DNS packet should be at least 12 bytes (header) + some data
+    if packet_data.len() < 12 {
+        return None;
     }
 
-    // Option 2: Manual DNS header parsing
-    fn analyze_manually(data: &[u8]) -> Option<String> {
-        if data.len() < 30 {
-            // Minimum size for headers + some DNS data
+    // Skip IP header (20 bytes) and UDP header (8 bytes)
+    let dns_data = if packet_data.len() > 28 {
+        &packet_data[28..]
+    } else {
+        return None;
+    };
+
+    // Basic DNS header parsing
+    // Skip first 12 bytes (DNS header) and start reading labels
+    let mut pos = 12;
+    let mut domain = String::new();
+
+    while pos < dns_data.len() {
+        let len = dns_data[pos] as usize;
+        if len == 0 {
+            break;
+        }
+
+        // Prevent buffer overflow
+        if pos + 1 + len > dns_data.len() {
             return None;
         }
 
-        let dns_data = &data[28..]; // Skip IP and UDP headers
-        let mut domain = String::new();
-        let mut pos = 12; // Skip DNS header
-
-        while pos < dns_data.len() {
-            let len = dns_data[pos] as usize;
-            if len == 0 {
-                break;
-            }
-
-            pos += 1;
-            if pos + len > dns_data.len() {
-                return None;
-            }
-
-            if !domain.is_empty() {
-                domain.push('.');
-            }
-
-            if let Ok(label) = str::from_utf8(&dns_data[pos..pos + len]) {
-                domain.push_str(label);
-            } else {
-                return None;
-            }
-
-            pos += len;
+        // Add dot between labels
+        if !domain.is_empty() {
+            domain.push('.');
         }
 
-        if domain.is_empty() {
-            None
+        // Extract label
+        if let Ok(label) = std::str::from_utf8(&dns_data[pos + 1..pos + 1 + len]) {
+            domain.push_str(label);
         } else {
-            Some(domain)
+            return None;
         }
+
+        pos += len + 1;
     }
 
-    // Try dns-parser first, fall back to manual parsing
-    analyze_with_dns_parser(packet_data).or_else(|| analyze_manually(packet_data))
+    if domain.is_empty() {
+        None
+    } else {
+        debug!("Found DNS query for domain: {}", domain);
+        Some(domain)
+    }
+}
+
+/// Represents the type of HTTP protocol
+#[derive(Debug, Clone)]
+pub enum HttpVersion {
+    Http1,
+    Http2,
 }
 
 /// Analyzes an HTTP packet and extracts request information
@@ -362,94 +373,161 @@ fn analyze_dns_packet(packet_data: &[u8]) -> Option<String> {
 /// # Arguments
 ///
 /// * `packet_data` - Raw packet data including IP and TCP headers
-///
-/// # Returns
-///
-/// Option containing tuple of (method, url, title) if successfully parsed
 fn analyze_http_packet(packet_data: &[u8]) -> Option<(String, String, Option<String>)> {
-    // Option 1: Using httparse crate
-    fn analyze_with_httparse(data: &[u8]) -> Option<(String, String, Option<String>)> {
-        let mut headers = [EMPTY_HEADER; 64];
-        let mut req = Request::new(&mut headers);
-
-        // Skip IP header (20 bytes) and TCP header (20 bytes)
-        let http_data = &data[40..];
-
-        match req.parse(http_data) {
-            Ok(status) if status.is_complete() => {
-                let method = req.method?.to_string();
-                let path = req.path?.to_string();
-
-                // Try to find Host header to construct full URL
-                let host = headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case("Host"))
-                    .and_then(|h| str::from_utf8(h.value).ok())
-                    .unwrap_or("");
-
-                let url = if host.is_empty() {
-                    path
-                } else {
-                    format!("http://{}{}", host, path)
-                };
-
-                // Look for title in response body
-                let title = extract_title_from_body(http_data);
-
-                Some((method, url, title))
-            }
-            _ => None,
-        }
+    if packet_data.len() <= 40 {
+        return None;
     }
 
-    // Option 2: Manual HTTP parsing
-    fn analyze_manually(data: &[u8]) -> Option<(String, String, Option<String>)> {
-        let http_data = &data[40..]; // Skip IP and TCP headers
+    let data = &packet_data[40..]; // Skip IP and TCP headers
 
-        // Convert to string and split into lines
-        if let Ok(text) = str::from_utf8(http_data) {
-            let lines: Vec<&str> = text.lines().collect();
-            if let Some(request_line) = lines.first() {
-                let parts: Vec<&str> = request_line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let method = parts[0].to_string();
-                    let path = parts[1].to_string();
+    // First, try to determine the HTTP version
+    match detect_http_version(data) {
+        HttpVersion::Http1 => analyze_http1_packet(data),
+        HttpVersion::Http2 => analyze_http2_packet(data),
+    }
+}
 
-                    // Try to find Host header
-                    let host = lines
-                        .iter()
-                        .find(|line| line.starts_with("Host: "))
-                        .and_then(|line| Some(line[6..].trim()))
-                        .unwrap_or("");
+/// Detects the HTTP version from packet data
+fn detect_http_version(data: &[u8]) -> HttpVersion {
+    if data.len() < 24 {
+        return HttpVersion::Http1;
+    }
 
-                    let url = if host.is_empty() {
-                        path
-                    } else {
-                        format!("http://{}{}", host, path)
-                    };
+    // Check for HTTP/2 connection preface
+    const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    if data.starts_with(H2_PREFACE) {
+        return HttpVersion::Http2;
+    }
 
-                    return Some((method, url, None));
+    // Default to HTTP/1.x
+    HttpVersion::Http1
+}
+
+/// Analyzes HTTP/1.x packets
+fn analyze_http1_packet(data: &[u8]) -> Option<(String, String, Option<String>)> {
+    if let Ok(data_str) = std::str::from_utf8(data) {
+        // Look for common HTTP methods
+        let methods = [
+            "GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "CONNECT",
+        ];
+
+        for method in methods.iter() {
+            if data_str.starts_with(method) {
+                if let Some(request_line) = data_str.lines().next() {
+                    let parts: Vec<&str> = request_line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        // Extract host and construct URL
+                        let host = data_str
+                            .lines()
+                            .find(|line| line.starts_with("Host: "))
+                            .and_then(|line| Some(line.trim_start_matches("Host: ").trim()))
+                            .unwrap_or("");
+
+                        let path = parts[1];
+                        let url = if host.is_empty() {
+                            path.to_string()
+                        } else {
+                            format!("http://{}{}", host, path)
+                        };
+
+                        // Extract title if present
+                        let title = extract_title(data_str);
+
+                        debug!("HTTP/1.x request: {} {}", method, url);
+                        return Some((method.to_string(), url, title));
+                    }
                 }
             }
         }
-        None
+    }
+    None
+}
+
+/// Analyzes HTTP/2 packets
+fn analyze_http2_packet(data: &[u8]) -> Option<(String, String, Option<String>)> {
+    const H2_PREFACE_LEN: usize = 24;
+    let frame_data = if data.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") {
+        &data[H2_PREFACE_LEN..]
+    } else {
+        data
+    };
+
+    if frame_data.len() < 9 {
+        return None;
     }
 
-    // Helper function to extract title from HTML
-    fn extract_title_from_body(data: &[u8]) -> Option<String> {
-        if let Ok(text) = str::from_utf8(data) {
-            if let Some(start) = text.to_lowercase().find("<title>") {
-                if let Some(end) = text[start..].to_lowercase().find("</title>") {
-                    let title_content = &text[start + 7..start + end].trim();
-                    return Some(title_content.to_string());
-                }
+    let frame_length =
+        ((frame_data[0] as u32) << 16) | ((frame_data[1] as u32) << 8) | (frame_data[2] as u32);
+    let frame_type = frame_data[3];
+    let _flags = frame_data[4];
+    let stream_id = ((frame_data[5] as u32) << 24)
+        | ((frame_data[6] as u32) << 16)
+        | ((frame_data[7] as u32) << 8)
+        | (frame_data[8] as u32);
+
+    // Only process HEADERS frames (type 0x1) with complete payload
+    if frame_type == 0x1 && frame_data.len() >= 9 + frame_length as usize {
+        let headers_payload = &frame_data[9..9 + frame_length as usize];
+
+        if let Some(headers) = decode_http2_headers(headers_payload) {
+            let method = headers.get(":method").cloned().unwrap_or_default();
+            let scheme = headers.get(":scheme").cloned().unwrap_or_default();
+            let authority = headers.get(":authority").cloned().unwrap_or_default();
+            let path = headers.get(":path").cloned().unwrap_or_default();
+
+            let url = format!("{}://{}{}", scheme, authority, path);
+            debug!("HTTP/2 request: {} {} (stream: {})", method, url, stream_id);
+
+            return Some((method, url, None));
+        }
+    }
+
+    None
+}
+
+fn decode_http2_headers(data: &[u8]) -> Option<HashMap<String, String>> {
+    let mut headers = HashMap::new();
+    let mut pos = 0;
+
+    while pos < data.len() {
+        // Read header length
+        if pos + 2 > data.len() {
+            break;
+        }
+
+        let length = ((data[pos] as usize) << 8) | (data[pos + 1] as usize);
+        pos += 2;
+
+        if pos + length > data.len() {
+            break;
+        }
+
+        // Try to parse header as UTF-8 string
+        if let Ok(header_str) = std::str::from_utf8(&data[pos..pos + length]) {
+            if let Some(separator) = header_str.find(':') {
+                let name = header_str[..separator].trim();
+                let value = header_str[separator + 1..].trim();
+                headers.insert(name.to_string(), value.to_string());
             }
         }
-        None
+
+        pos += length;
     }
 
-    // Try httparse first, fall back to manual parsing
-    analyze_with_httparse(packet_data).or_else(|| analyze_manually(packet_data))
+    if headers.is_empty() {
+        None
+    } else {
+        Some(headers)
+    }
+}
+
+fn extract_title(data: &str) -> Option<String> {
+    if let Some(start) = data.to_lowercase().find("<title>") {
+        if let Some(end) = data[start..].to_lowercase().find("</title>") {
+            return Some(data[start + 7..start + end].trim().to_string());
+        }
+    }
+    None
 }
 
 /// Updates the HTML report with current statistics

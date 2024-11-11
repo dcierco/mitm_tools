@@ -23,3 +23,7 @@ serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.132"
 dns-parser = "0.8.0"
 httparse = "1.9.5"
+h2 = "0.4.6"
+quinn = "0.11.5"
+bytes = "1.8.0"
+http = "1.1.0"
