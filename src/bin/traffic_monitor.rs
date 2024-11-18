@@ -272,6 +272,9 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
         let mut stats = stats.lock().unwrap();
         stats.packet_count += 1;
 
+        // Print packet info for debugging
+        print_packet_info(&packet.data);
+
         // Analyze packet based on content
         if packet.header.len > 0 {
             if is_dns_packet(&packet.data) {
@@ -279,21 +282,20 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
                     debug!("DNS query captured: {}", domain);
                     stats.add_dns_query(domain.clone());
 
-                    // If this DNS query is followed by traffic on port 443, it's likely HTTPS
+                    // If this DNS query is followed by traffic on port 443
                     if is_https_traffic(&packet.data) {
+                        info!("HTTPS traffic detected for domain: {}", domain);
                         stats.add_https_request(&domain);
                     }
                 }
             } else if is_http_packet(&packet.data) {
                 if let Some((method, url, title, protocol)) = analyze_http_packet(&packet.data) {
-                    debug!("HTTP request captured: {} {} ({})", method, url, protocol);
-                    stats.http_requests.push(HttpRequest {
-                        url,
-                        method,
-                        timestamp: Utc::now(),
-                        title,
-                        protocol,
-                    });
+                    info!("HTTP request captured: {} {} ({})", method, url, protocol);
+                    match protocol.as_str() {
+                        "HTTP/2" => stats.add_http2_request(url, method, title),
+                        "HTTP/1" => stats.add_http_request(url, method, title),
+                        _ => debug!("Unknown protocol: {}", protocol),
+                    }
                 }
             }
         }
@@ -312,10 +314,10 @@ fn is_https_traffic(packet_data: &[u8]) -> bool {
         return false;
     }
 
-    // Check for port 443
     let dest_port = ((packet_data[22] as u16) << 8) | packet_data[23] as u16;
     let src_port = ((packet_data[20] as u16) << 8) | packet_data[21] as u16;
 
+    debug!("Ports detected - src: {}, dest: {}", src_port, dest_port);
     dest_port == 443 || src_port == 443
 }
 
@@ -334,12 +336,17 @@ fn is_dns_packet(packet_data: &[u8]) -> bool {
 
 fn is_http_packet(packet_data: &[u8]) -> bool {
     if packet_data.len() <= 40 {
+        debug!("Packet too short for HTTP");
         return false;
     }
 
     let data = &packet_data[40..];
     if let Ok(str_data) = std::str::from_utf8(data) {
         let first_line = str_data.lines().next().unwrap_or("");
+        debug!(
+            "Analyzing potential HTTP packet. First line: {}",
+            first_line
+        );
         return first_line.contains("HTTP/")
             || first_line.starts_with("GET ")
             || first_line.starts_with("POST ")
@@ -348,6 +355,26 @@ fn is_http_packet(packet_data: &[u8]) -> bool {
             || first_line.starts_with("DELETE ");
     }
     false
+}
+
+fn print_packet_info(packet_data: &[u8]) {
+    if packet_data.len() > 40 {
+        let src_port = ((packet_data[20] as u16) << 8) | packet_data[21] as u16;
+        let dest_port = ((packet_data[22] as u16) << 8) | packet_data[23] as u16;
+        debug!(
+            "Packet - Length: {}, Src Port: {}, Dest Port: {}",
+            packet_data.len(),
+            src_port,
+            dest_port
+        );
+
+        if let Ok(str_data) = std::str::from_utf8(&packet_data[40..]) {
+            debug!(
+                "Packet content preview: {:.100}",
+                str_data.replace('\n', "\\n")
+            );
+        }
+    }
 }
 
 /// Analyzes a DNS packet and extracts the queried domain
