@@ -62,6 +62,8 @@ struct HttpRequest {
     timestamp: DateTime<Utc>,
     /// Page title if available
     title: Option<String>,
+    /// Protocol used (HTTP, HTTP/2 or HTTPS)
+    protocol: String,
 }
 
 /// Structure for passing data to the HTML template
@@ -132,6 +134,17 @@ impl TrafficStats {
             method,
             timestamp: Utc::now(),
             title,
+            protocol: "HTTP".to_string(),
+        });
+    }
+
+    fn add_https_request(&mut self, domain: &str) {
+        self.http_requests.push(HttpRequest {
+            url: format!("https://{}", domain),
+            method: "CONNECT".to_string(), // HTTPS typically starts with CONNECT
+            timestamp: Utc::now(),
+            title: None,
+            protocol: "HTTPS".to_string(),
         });
     }
 
@@ -254,7 +267,12 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
             if is_dns_packet(&packet.data) {
                 if let Some(domain) = analyze_dns_packet(&packet.data) {
                     debug!("DNS query captured: {}", domain);
-                    stats.add_dns_query(domain);
+                    stats.add_dns_query(domain.clone());
+
+                    // If this DNS query is followed by traffic on port 443, it's likely HTTPS
+                    if is_https_traffic(&packet.data) {
+                        stats.add_https_request(&domain);
+                    }
                 }
             } else if is_http_packet(&packet.data) {
                 if let Some((method, url, title)) = analyze_http_packet(&packet.data) {
@@ -271,6 +289,18 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
     }
 
     Ok(())
+}
+
+fn is_https_traffic(packet_data: &[u8]) -> bool {
+    if packet_data.len() <= 40 {
+        return false;
+    }
+
+    // Check for port 443
+    let dest_port = ((packet_data[22] as u16) << 8) | packet_data[23] as u16;
+    let src_port = ((packet_data[20] as u16) << 8) | packet_data[21] as u16;
+
+    dest_port == 443 || src_port == 443
 }
 
 fn is_dns_packet(packet_data: &[u8]) -> bool {
