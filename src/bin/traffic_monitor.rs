@@ -138,6 +138,16 @@ impl TrafficStats {
         });
     }
 
+    fn add_http2_request(&mut self, url: String, method: String, title: Option<String>) {
+        self.http_requests.push(HttpRequest {
+            url,
+            method,
+            timestamp: Utc::now(),
+            title,
+            protocol: "HTTP/2".to_string(),
+        });
+    }
+
     fn add_https_request(&mut self, domain: &str) {
         self.http_requests.push(HttpRequest {
             url: format!("https://{}", domain),
@@ -275,9 +285,15 @@ fn monitor_traffic(target: &str, interface: Option<&str>, output_dir: &str) -> R
                     }
                 }
             } else if is_http_packet(&packet.data) {
-                if let Some((method, url, title)) = analyze_http_packet(&packet.data) {
-                    debug!("HTTP request captured: {} {}", method, url);
-                    stats.add_http_request(url, method, title);
+                if let Some((method, url, title, protocol)) = analyze_http_packet(&packet.data) {
+                    debug!("HTTP request captured: {} {} ({})", method, url, protocol);
+                    stats.http_requests.push(HttpRequest {
+                        url,
+                        method,
+                        timestamp: Utc::now(),
+                        title,
+                        protocol,
+                    });
                 }
             }
         }
@@ -403,7 +419,7 @@ pub enum HttpVersion {
 /// # Arguments
 ///
 /// * `packet_data` - Raw packet data including IP and TCP headers
-fn analyze_http_packet(packet_data: &[u8]) -> Option<(String, String, Option<String>)> {
+fn analyze_http_packet(packet_data: &[u8]) -> Option<(String, String, Option<String>, String)> {
     if packet_data.len() <= 40 {
         return None;
     }
@@ -434,7 +450,7 @@ fn detect_http_version(data: &[u8]) -> HttpVersion {
 }
 
 /// Analyzes HTTP/1.x packets
-fn analyze_http1_packet(data: &[u8]) -> Option<(String, String, Option<String>)> {
+fn analyze_http1_packet(data: &[u8]) -> Option<(String, String, Option<String>, String)> {
     if let Ok(data_str) = std::str::from_utf8(data) {
         // Look for common HTTP methods
         let methods = [
@@ -464,7 +480,7 @@ fn analyze_http1_packet(data: &[u8]) -> Option<(String, String, Option<String>)>
                         let title = extract_title(data_str);
 
                         debug!("HTTP/1.x request: {} {}", method, url);
-                        return Some((method.to_string(), url, title));
+                        return Some((method.to_string(), url, title, "HTTP/1".to_string()));
                     }
                 }
             }
@@ -474,7 +490,7 @@ fn analyze_http1_packet(data: &[u8]) -> Option<(String, String, Option<String>)>
 }
 
 /// Analyzes HTTP/2 packets
-fn analyze_http2_packet(data: &[u8]) -> Option<(String, String, Option<String>)> {
+fn analyze_http2_packet(data: &[u8]) -> Option<(String, String, Option<String>, String)> {
     const H2_PREFACE_LEN: usize = 24;
     let frame_data = if data.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") {
         &data[H2_PREFACE_LEN..]
@@ -508,7 +524,7 @@ fn analyze_http2_packet(data: &[u8]) -> Option<(String, String, Option<String>)>
             let url = format!("{}://{}{}", scheme, authority, path);
             debug!("HTTP/2 request: {} {} (stream: {})", method, url, stream_id);
 
-            return Some((method, url, None));
+            return Some((method, url, None, "HTTP/2".to_string()));
         }
     }
 
