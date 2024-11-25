@@ -139,9 +139,13 @@ impl Monitor {
             .open()
             .map_err(|e| format!("Failed to open capture: {}", e))?;
 
-        // Set capture filter for HTTP and DNS traffic
-        let filter = "port 80 or port 53 or port 443";
-        cap.filter(filter, true)
+        // Modify the filter to only capture target's traffic
+        let filter = format!(
+            "(host {}) and (port 80 or port 53 or port 443)",
+            self.analyzer.get_target_ip()
+        );
+
+        cap.filter(&filter, true)
             .map_err(|e| format!("Failed to set filter: {}", e))?;
 
         info!("Started capturing traffic with filter: {}", filter);

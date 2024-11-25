@@ -43,6 +43,10 @@ impl PacketAnalyzer {
         }
     }
 
+    pub fn get_target_ip(&self) -> IpAddr {
+        self.target_ip
+    }
+
     pub fn analyze_packet(&mut self, packet_data: &[u8]) -> PacketType {
         if packet_data.len() < 34 {
             // Minimum size for IPv4 + TCP/UDP header
