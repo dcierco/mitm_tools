@@ -1,0 +1,18 @@
+FROM rust:latest
+
+# Install required packages
+RUN apt-get update && apt-get install -y \
+    libpcap-dev \
+    gcc \
+    make \
+    dsniff \
+    net-tools \
+    iputils-ping \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up working directory
+WORKDIR /app
+
+CMD ["tail", "-f", "/dev/null"]

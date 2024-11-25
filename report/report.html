@@ -26,31 +26,31 @@
                         <div class="text-sm text-blue-600 font-medium">
                             Started
                         </div>
-                        <div class="text-lg">{{start_time}}</div>
+                        <div class="text-lg">2024-11-25 22:14:11</div>
                     </div>
                     <div class="bg-green-50 p-4 rounded-lg">
                         <div class="text-sm text-green-600 font-medium">
                             Duration
                         </div>
-                        <div class="text-lg">{{format_duration duration}}</div>
+                        <div class="text-lg">secs: 10, nanos: 22020055</div>
                     </div>
                     <div class="bg-purple-50 p-4 rounded-lg">
                         <div class="text-sm text-purple-600 font-medium">
                             Packets
                         </div>
-                        <div class="text-lg">{{packet_count}}</div>
+                        <div class="text-lg">76</div>
                     </div>
                     <div class="bg-yellow-50 p-4 rounded-lg">
                         <div class="text-sm text-yellow-600 font-medium">
                             DNS Queries
                         </div>
-                        <div class="text-lg">{{dns_count}}</div>
+                        <div class="text-lg">4</div>
                     </div>
                     <div class="bg-indigo-50 p-4 rounded-lg">
                         <div class="text-sm text-indigo-600 font-medium">
                             HTTP(S) Requests
                         </div>
-                        <div class="text-lg">{{http_count}}</div>
+                        <div class="text-lg">2</div>
                     </div>
                 </div>
             </div>
@@ -64,7 +64,6 @@
                             Web Browsing Activity
                         </h2>
                         <div class="space-y-4">
-                            {{#each http_requests}}
                             <div
                                 class="border rounded-lg p-4 hover:shadow-md transition-shadow"
                             >
@@ -74,43 +73,63 @@
                                     <div class="flex items-center space-x-2">
                                         <span
                                             class="px-2 py-1 text-sm rounded-md
-                                            {{#if (eq protocol 'HTTPS')}}
                                                 bg-green-100 text-green-800
-                                            {{else if (eq protocol 'HTTP/2')}}
-                                                bg-blue-100 text-blue-800
-                                            {{else}}
-                                                bg-yellow-100 text-yellow-800
-                                            {{/if}}
                                         "
                                         >
-                                            {{protocol}}
+                                            HTTPS
                                         </span>
                                         <span
                                             class="px-2 py-1 bg-gray-100 text-gray-800 rounded-md text-sm"
                                         >
-                                            {{method}}
+                                            CONNECT
                                         </span>
                                     </div>
                                     <span class="text-sm text-gray-500">
-                                        {{format_timestamp timestamp}}
+                                        2024-11-25 22:14:15
                                     </span>
                                 </div>
                                 <a
-                                    href="{{url}}"
+                                    href="https://example.com"
                                     class="text-blue-600 hover:text-blue-800 hover:underline block mb-1 break-all"
                                     target="_blank"
                                     rel="noopener noreferrer"
                                 >
-                                    {{url}}
+                                    https://example.com
                                 </a>
-                                {{#if title}}
-                                <div class="text-sm text-gray-600 mt-2">
-                                    <span class="font-medium">Page Title:</span>
-                                    {{title}}
-                                </div>
-                                {{/if}}
                             </div>
-                            {{/each}}
+                            <div
+                                class="border rounded-lg p-4 hover:shadow-md transition-shadow"
+                            >
+                                <div
+                                    class="flex items-center justify-between mb-2"
+                                >
+                                    <div class="flex items-center space-x-2">
+                                        <span
+                                            class="px-2 py-1 text-sm rounded-md
+                                                bg-green-100 text-green-800
+                                        "
+                                        >
+                                            HTTPS
+                                        </span>
+                                        <span
+                                            class="px-2 py-1 bg-gray-100 text-gray-800 rounded-md text-sm"
+                                        >
+                                            CONNECT
+                                        </span>
+                                    </div>
+                                    <span class="text-sm text-gray-500">
+                                        2024-11-25 22:14:15
+                                    </span>
+                                </div>
+                                <a
+                                    href="https://example.com"
+                                    class="text-blue-600 hover:text-blue-800 hover:underline block mb-1 break-all"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    https://example.com
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -122,20 +141,54 @@
                             DNS Resolution Activity
                         </h2>
                         <div class="space-y-2">
-                            {{#each dns_queries}}
                             <div
                                 class="border rounded-lg p-3 hover:shadow-md transition-shadow"
                             >
                                 <div
                                     class="text-sm font-medium text-gray-800 mb-1 break-all"
                                 >
-                                    {{domain}}
+                                    example.com
                                 </div>
                                 <div class="text-xs text-gray-500">
-                                    {{format_timestamp timestamp}}
+                                    2024-11-25 22:14:15
                                 </div>
                             </div>
-                            {{/each}}
+                            <div
+                                class="border rounded-lg p-3 hover:shadow-md transition-shadow"
+                            >
+                                <div
+                                    class="text-sm font-medium text-gray-800 mb-1 break-all"
+                                >
+                                    example.com
+                                </div>
+                                <div class="text-xs text-gray-500">
+                                    2024-11-25 22:14:15
+                                </div>
+                            </div>
+                            <div
+                                class="border rounded-lg p-3 hover:shadow-md transition-shadow"
+                            >
+                                <div
+                                    class="text-sm font-medium text-gray-800 mb-1 break-all"
+                                >
+                                    example.com
+                                </div>
+                                <div class="text-xs text-gray-500">
+                                    2024-11-25 22:14:15
+                                </div>
+                            </div>
+                            <div
+                                class="border rounded-lg p-3 hover:shadow-md transition-shadow"
+                            >
+                                <div
+                                    class="text-sm font-medium text-gray-800 mb-1 break-all"
+                                >
+                                    example.com
+                                </div>
+                                <div class="text-xs text-gray-500">
+                                    2024-11-25 22:14:15
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -151,10 +204,10 @@
                     Session Summary
                 </div>
                 <div class="text-xs text-gray-600 mt-1">
-                    Monitored for {{format_duration duration}}
+                    Monitored for secs: 10, nanos: 22020055
                 </div>
                 <div class="text-xs text-gray-600">
-                    {{http_count}} requests • {{dns_count}} DNS queries
+                    2 requests • 4 DNS queries
                 </div>
             </div>
         </div>

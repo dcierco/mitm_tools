@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
 use clap::Parser;
-use handlebars::Handlebars;
+use handlebars::{Handlebars, Helper, HelperResult, Output, RenderContext};
 use log::{debug, error, info};
 use pcap::{Capture, Device};
 use serde::Serialize;
@@ -160,7 +160,7 @@ impl Monitor {
         });
     }
 
-    pub fn start(&self, interface: Option<&str>) -> Result<(), String> {
+    pub fn start(&mut self, interface: Option<&str>) -> Result<(), String> {
         let mut cap = self.setup_capture(interface)?;
         self.start_report_updater();
 
@@ -182,16 +182,20 @@ impl Monitor {
                 stats.add_dns_query(domain);
             }
             PacketType::HTTP(request) => {
-                info!("HTTP Request: {} {}", request.method, request.url);
+                info!(
+                    "HTTP Request: {} {} ({})",
+                    request.method, request.url, request.protocol
+                );
                 stats.add_http_request(request);
             }
             PacketType::HTTPS(domain) => {
-                info!("HTTPS Connection: {}", domain);
+                info!("HTTPS Connection to: {}", domain);
                 stats.add_http_request(HttpRequest {
                     method: "CONNECT".to_string(),
                     url: format!("https://{}", domain),
                     title: None,
                     protocol: "HTTPS".to_string(),
+                    timestamp: Utc::now(),
                 });
             }
             PacketType::Unknown => {
@@ -209,6 +213,63 @@ fn update_html_report(stats: &TrafficStats, output_dir: &str) -> Result<(), Stri
     }
 
     let mut handlebars = Handlebars::new();
+
+    // Register helper for timestamp formatting
+    handlebars.register_helper(
+        "format_timestamp",
+        Box::new(
+            |h: &Helper,
+             _: &Handlebars,
+             _: &handlebars::Context,
+             _: &mut RenderContext,
+             out: &mut dyn Output|
+             -> HelperResult {
+                let timestamp = h.param(0).and_then(|v| v.value().as_i64()).unwrap_or(0);
+                let dt = DateTime::<Utc>::from_timestamp(timestamp, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&Local);
+                out.write(&dt.format("%Y-%m-%d %H:%M:%S").to_string())?;
+                Ok(())
+            },
+        ),
+    );
+
+    // Register helper for duration formatting
+    handlebars.register_helper(
+        "format_duration",
+        Box::new(
+            |h: &Helper,
+             _: &Handlebars,
+             _: &handlebars::Context,
+             _: &mut RenderContext,
+             out: &mut dyn Output|
+             -> HelperResult {
+                let duration = h.param(0).and_then(|v| v.value().as_str()).unwrap_or("");
+                let formatted = duration.replace("TimeDelta { ", "").replace(" }", "");
+                out.write(&formatted)?;
+                Ok(())
+            },
+        ),
+    );
+
+    // Register helper for protocol comparison
+    handlebars.register_helper(
+        "eq",
+        Box::new(
+            |h: &Helper,
+             _: &Handlebars,
+             _: &handlebars::Context,
+             _: &mut RenderContext,
+             out: &mut dyn Output|
+             -> HelperResult {
+                let param0 = h.param(0).and_then(|v| v.value().as_str()).unwrap_or("");
+                let param1 = h.param(1).and_then(|v| v.value().as_str()).unwrap_or("");
+                out.write(if param0 == param1 { "true" } else { "false" })?;
+                Ok(())
+            },
+        ),
+    );
+
     let template = include_str!("../templates/report.html");
 
     handlebars
@@ -234,7 +295,7 @@ fn main() {
 
     let target_ip = args.target.parse().expect("Invalid target IP address");
 
-    let monitor = Monitor::new(target_ip, args.output);
+    let mut monitor = Monitor::new(target_ip, args.output);
 
     if let Err(e) = monitor.start(args.interface.as_deref()) {
         error!("Monitoring failed: {}", e);
