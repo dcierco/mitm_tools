@@ -2,6 +2,15 @@
 name = "mitm_tools"
 version = "0.1.0"
 edition = "2021"
+authors = ["Daniel Cierco", "Josue Nascimento"]
+description = "A set of tools for network monitoring and man-in-the-middle analysis"
+repository = "https://github.com/dcierco/mitm_tools"
+license = "MIT"
+keywords = ["network", "security", "mitm", "packet-analysis", "monitoring"]
+categories = ["network-programming", "command-line-utilities"]
+readme = "README.md"
+
+exclude = ["*.log", "target/*", "tests/*", "examples/*", "docs/*"]
 
 [[bin]]
 name = "host_discovery"

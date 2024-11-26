@@ -1,7 +1,27 @@
-//! Host Discovery Binary
+//! # Host Discovery Binary
 //!
-//! This binary provides functionality for scanning a network to discover active hosts
-//! using ICMP echo requests (ping).
+//! A network scanning tool that discovers active hosts on a network using ICMP echo requests (ping).
+//!
+//! ## Operation
+//!
+//! The tool performs network scanning by:
+//! 1. Parsing the target network range in CIDR notation
+//! 2. Creating ICMP echo request packets
+//! 3. Sending packets to each potential host
+//! 4. Recording responses and timing information
+//!
+//! ## Network Packet Structure
+//!
+//! ```text
+//! ICMP Echo Request/Reply:
+//! +------------------+------------------+------------------+
+//! |     Type (8)    |    Code (0)     |     Checksum    |
+//! +------------------+------------------+------------------+
+//! |    Identifier   |  Sequence Number |                 |
+//! +------------------+------------------+     Payload     |
+//! |                    Optional Data                     |
+//! +---------------------------------------------------->
+//! ```
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
@@ -20,40 +40,90 @@ use pnet::util;
 
 use mitm_tools::network::{get_network_ips, parse_cidr};
 
-/// Command line arguments structure
+/// Command line arguments for the host discovery tool
+///
+/// # Example
+///
+/// ```text
+/// host_discovery -n 192.168.1.0/24 -t 1000
+/// ```
 #[derive(Parser)]
 #[command(name = "host_discovery")]
-#[command(author = "Daniel Cierco")]
-#[command(version = "1.0")]
-#[command(about = "Network host discovery tool", long_about = None)]
+#[command(author, version)]
+#[command(about = "Network host discovery tool")]
+#[command(
+    long_about = "A network scanning tool that discovers active hosts using ICMP echo requests.\n\
+    \n\
+    USAGE:\n\
+      host_discovery -n <NETWORK_CIDR> [-t <TIMEOUT>]\n\
+    \n\
+    EXAMPLES:\n\
+      # Scan local network with default timeout\n\
+      host_discovery -n 192.168.1.0/24\n\
+      \n\
+      # Scan with custom timeout (in milliseconds)\n\
+      host_discovery -n 192.168.1.0/24 -t 2000\n\
+    \n\
+    FEATURES:\n\
+      - ICMP echo request (ping) based scanning\n\
+      - Parallel host discovery\n\
+      - Response time measurement\n\
+      - Configurable timeout per host\n\
+    \n\
+    The tool will output:\n\
+      - Total hosts in network\n\
+      - Number of active hosts found\n\
+      - Individual host response times\n\
+      - Total scan duration"
+)]
 struct Args {
     /// Network CIDR (e.g., 192.168.1.0/24)
     #[arg(short, long)]
     network: String,
 
-    /// Timeout in milliseconds
+    /// Timeout in milliseconds for each host scan
     #[arg(short, long, default_value_t = 1000)]
     timeout: u64,
 }
 
-/// Represents information about a discovered host
+/// Information about a discovered active host on the network
+///
+/// This structure contains both the IP address of the discovered host
+/// and the round-trip time of the ICMP echo request/reply.
 #[derive(Debug)]
 struct HostInfo {
-    /// IP address of the host
+    /// IPv4 address of the discovered host
     ip: Ipv4Addr,
-    /// Response time for ICMP echo request
+    /// Time taken for the host to respond to the ICMP echo request
     response_time: Duration,
 }
 
-/// Creates an ICMP echo request packet
+/// Creates an ICMP echo request packet (ping)
 ///
 /// # Arguments
 ///
-/// * `buffer` - Mutable buffer to store the packet
+/// * `buffer` - Pre-allocated buffer to store the packet
 ///
 /// # Returns
 ///
-/// A mutable ICMP echo request packet
+/// A mutable ICMP echo request packet ready to be sent
+///
+/// # Packet Structure
+///
+/// The created packet follows the ICMP protocol structure:
+/// - Type: Echo Request (8)
+/// - Code: No Code (0)
+/// - Identifier: 42 (arbitrary)
+/// - Sequence: 1
+/// - Checksum: Calculated based on packet content
+///
+/// # Examples
+///
+/// ```no_run
+/// let mut buffer = vec![0u8; 64];
+/// let packet = create_icmp_packet(&mut buffer);
+/// // packet can now be sent using a transport channel
+/// ```
 fn create_icmp_packet(buffer: &mut [u8]) -> MutableEchoRequestPacket {
     let mut packet = MutableEchoRequestPacket::new(buffer).unwrap();
     packet.set_icmp_type(IcmpTypes::EchoRequest);
@@ -69,12 +139,41 @@ fn create_icmp_packet(buffer: &mut [u8]) -> MutableEchoRequestPacket {
 ///
 /// # Arguments
 ///
-/// * `network` - CIDR notation of the network to scan
-/// * `timeout_ms` - Timeout in milliseconds for each host
+/// * `network` - Network range in CIDR notation (e.g., "192.168.1.0/24")
+/// * `timeout_ms` - Maximum time to wait for each host's response
 ///
 /// # Returns
 ///
-/// Result indicating success or containing error message
+/// * `Ok(())` - Scan completed successfully
+/// * `Err(String)` - Error occurred during scanning
+///
+/// # Implementation Details
+///
+/// The function:
+/// 1. Creates a transport channel for ICMP communication
+/// 2. Generates list of IP addresses to scan
+/// 3. Sends ICMP echo requests to each address
+/// 4. Records responses and timing information
+/// 5. Prints summary of discovered hosts
+///
+/// # Example Output
+///
+/// ```text
+/// Scan Results:
+/// Total hosts in network: 254
+/// Active hosts found: 12
+/// Total scan time: 5.234s
+///
+/// Active Hosts:
+/// IP: 192.168.1.1, Response Time: 2ms
+/// IP: 192.168.1.5, Response Time: 1ms
+/// ...
+/// ```
+///
+/// # Notes
+///
+/// * Requires root/administrator privileges due to raw socket usage
+/// * May be blocked by firewalls or security policies
 fn scan_network(network: &str, timeout_ms: u64) -> Result<(), String> {
     let (network_addr, mask) = parse_cidr(network)?;
     let timeout = Duration::from_millis(timeout_ms);
@@ -90,7 +189,7 @@ fn scan_network(network: &str, timeout_ms: u64) -> Result<(), String> {
     let ips = get_network_ips(network_addr, mask);
     let total_hosts = ips.len();
 
-    debug!("Scanning {} hosts", total_hosts);
+    debug!("Starting scan of {} hosts", total_hosts);
     let scan_start = Instant::now();
 
     // Scan each IP address in the network
@@ -144,6 +243,9 @@ fn scan_network(network: &str, timeout_ms: u64) -> Result<(), String> {
 }
 
 /// Main entry point for the host discovery tool
+///
+/// Initializes logging, parses command line arguments,
+/// and executes the network scan operation.
 fn main() {
     env_logger::init();
     let args = Args::parse();
@@ -153,5 +255,21 @@ fn main() {
     if let Err(e) = scan_network(&args.network, args.timeout) {
         error!("Scan failed: {}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_icmp_packet() {
+        let mut buffer = vec![0u8; 64];
+        let packet = create_icmp_packet(&mut buffer);
+
+        assert_eq!(packet.get_icmp_type(), IcmpTypes::EchoRequest);
+        assert_eq!(packet.get_icmp_code(), IcmpCodes::NoCode);
+        assert_eq!(packet.get_identifier(), 42);
+        assert_eq!(packet.get_sequence_number(), 1);
     }
 }
