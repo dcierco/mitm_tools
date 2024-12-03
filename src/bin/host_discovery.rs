@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use log::{debug, error, info, warn};
 use pnet::packet::icmp::echo_request::{IcmpCodes, MutableEchoRequestPacket};
-use pnet::packet::icmp::IcmpTypes;
+use pnet::packet::icmp::{echo_reply, IcmpTypes};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::Packet;
 use pnet::transport::{
@@ -113,7 +113,7 @@ struct HostInfo {
 /// The created packet follows the ICMP protocol structure:
 /// - Type: Echo Request (8)
 /// - Code: No Code (0)
-/// - Identifier: 42 (arbitrary)
+/// - Identifier: Process ID of the sender
 /// - Sequence: 1
 /// - Checksum: Calculated based on packet content
 ///
@@ -128,7 +128,7 @@ fn create_icmp_packet(buffer: &mut [u8]) -> MutableEchoRequestPacket {
     let mut packet = MutableEchoRequestPacket::new(buffer).unwrap();
     packet.set_icmp_type(IcmpTypes::EchoRequest);
     packet.set_icmp_code(IcmpCodes::NoCode);
-    packet.set_identifier(42);
+    packet.set_identifier(std::process::id() as u16);
     packet.set_sequence_number(1);
     let checksum = util::checksum(packet.packet(), 1);
     packet.set_checksum(checksum);
@@ -195,10 +195,12 @@ fn scan_network(network: &str, timeout_ms: u64) -> Result<(), String> {
     // Scan each IP address in the network
     for ip in ips {
         let mut buffer = vec![0u8; 64];
-        let packet = create_icmp_packet(&mut buffer);
+        let request = create_icmp_packet(&mut buffer);
+        let request_id = request.get_identifier();
+        let request_seq = request.get_sequence_number();
         let send_time = Instant::now();
 
-        if let Err(e) = tx.send_to(packet, IpAddr::V4(ip)) {
+        if let Err(e) = tx.send_to(request, IpAddr::V4(ip)) {
             warn!("Failed to send packet to {}: {}", ip, e);
             continue;
         }
@@ -207,13 +209,25 @@ fn scan_network(network: &str, timeout_ms: u64) -> Result<(), String> {
 
         // Wait for response with timeout
         match iter.next_with_timeout(timeout) {
-            Ok(Some((_, addr))) => {
+            Ok(Some((reply, addr))) => {
                 if addr == IpAddr::V4(ip) {
-                    let response_time = send_time.elapsed();
-                    info!("Host {} is up (latency: {:?})", ip, response_time);
+                    // Verify it's an echo reply
+                    if let Some(echo_reply) = echo_reply::EchoReplyPacket::new(reply.packet()) {
+                        if echo_reply.get_icmp_type() == IcmpTypes::EchoReply
+                            && echo_reply.get_identifier() == request_id
+                            && echo_reply.get_sequence_number() == request_seq
+                        {
+                            let response_time = send_time.elapsed();
+                            info!("Host {} is up (latency: {:?})", ip, response_time);
 
-                    let mut hosts = active_hosts.lock().unwrap();
-                    hosts.push(HostInfo { ip, response_time });
+                            let mut hosts = active_hosts.lock().unwrap();
+                            hosts.push(HostInfo { ip, response_time });
+                        } else {
+                            debug!("Received non-matching ICMP reply from {}", ip);
+                        }
+                    } else {
+                        debug!("Received malformed ICMP reply from {}", ip);
+                    }
                 }
             }
             Ok(None) => {
@@ -269,7 +283,7 @@ mod tests {
 
         assert_eq!(packet.get_icmp_type(), IcmpTypes::EchoRequest);
         assert_eq!(packet.get_icmp_code(), IcmpCodes::NoCode);
-        assert_eq!(packet.get_identifier(), 42);
         assert_eq!(packet.get_sequence_number(), 1);
+        assert!(packet.get_identifier() > 0);
     }
 }
